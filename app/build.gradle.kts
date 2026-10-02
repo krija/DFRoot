@@ -20,10 +20,10 @@ android {
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("keystore")
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
-            signingConfig = signingConfigs.getByName("keystore")
+            // ZAPNUTIE R8 OPTIMALIZÁCIE A SHRINKOVANIA
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
