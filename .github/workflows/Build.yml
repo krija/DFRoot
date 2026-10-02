@@ -1,0 +1,78 @@
+name: Build DFRoot
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Install LLVM tools
+        run: sudo apt-get install -y llvm
+
+      - name: Build LKM
+        run: |
+          chmod +x dirtyfrag-lkm/build.sh
+          cd dirtyfrag-lkm
+          docker run -v "$(pwd)":/src -w /src \
+            --user "$(id -u)" \
+            ghcr.io/ylarod/ddk-min:android15-6.6 \
+            make
+          cp dirtyfrag.ko dirtyfrag-android15-6.6.ko
+          llvm-objcopy --strip-unneeded \
+            -R .comment -R .note.gnu.build-id \
+            -R .BTF -R .BTF.base -R .llvm_addrsig \
+            dirtyfrag-android15-6.6.ko
+          mkdir -p ../app/src/main/jni/ko
+          cp dirtyfrag-android15-6.6.ko \
+            ../app/src/main/jni/ko/
+
+      # 1. NAJPRV DEKÓDUJEME KĽÚČ ZO SECRETS (Do hlavného priečinka projektu)
+      - name: Decode Keystore from Secrets
+        run: |
+          echo "${{ secrets.SIGNING_KEY }}" | base64 --decode > my-release-key.jks
+
+      # 2. SPUSTÍME BUILD (Gradle si sám vytiahne heslá z bloku env a kľúč podpíše)
+      - name: Build APK (Release Mode)
+        env:
+          KEYSTORE_FILE: "../my-release-key.jks"
+          KEYSTORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      # 3. AUTOMATICKÉ VYTVORENIE GITHUB RELEASE (Zoberie presne premenované dirtyfrag.apk)
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v2.1-${{ github.run_number }}
+          name: DFRoot Release v2.1 (Build #${{ github.run_number }})
+          body: |
+            Automaticky vygenerovaná a optimalizovaná stabilná verzia aplikácie DFRoot.
+            - Zraniteľnosť: DIRTYFRAG
+          files: app/build/outputs/apk/release/dirtyfrag.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
