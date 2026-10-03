@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
 #include <arpa/inet.h>
 #include "reporter.h"
 #include "aes256.h"
@@ -206,6 +207,42 @@ out_pipe:
  * For vendor files (use_helper=1): reads old_content via crash_dump bridge.
  * len must be a multiple of 16.
  */
+/* Our own ESP demux socket. The kernel's UDP_ENCAP setsockopt has no
+ * capability check, so any uid can turn a UDP socket into an ESP-in-UDP
+ * demuxer; XFRM then matches inbound ESP by SPI+daddr, not by receiving
+ * socket. This bypasses an IpSecService that returns a port but never
+ * issues the encap setsockopt (observed on vivo). */
+static int g_df_encap_sk = -1;
+static int g_df_encap_port;
+
+static int df_encap_open(void) {
+    if (g_df_encap_sk >= 0) return g_df_encap_sk;
+    int sk = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sk < 0) return -1;
+    int val = UDP_ENCAP_ESPINUDP;
+    if (setsockopt(sk, SOL_UDP, UDP_ENCAP, &val, sizeof(val)) < 0) {
+        reportfmt(NULL, "df encap: UDP_ENCAP_ESPINUDP setsockopt failed: %s\n", strerror(errno));
+        close(sk);
+        return -1;
+    }
+    struct sockaddr_in a = {.sin_family = AF_INET,
+                            .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    if (bind(sk, (struct sockaddr *)&a, sizeof(a)) < 0) {
+        reportfmt(NULL, "df encap: bind failed: %s\n", strerror(errno));
+        close(sk);
+        return -1;
+    }
+    socklen_t alen = sizeof(a);
+    if (getsockname(sk, (struct sockaddr *)&a, &alen) < 0) {
+        close(sk);
+        return -1;
+    }
+    g_df_encap_sk = sk;
+    g_df_encap_port = ntohs(a.sin_port);
+    reportfmt(NULL, "* df encap socket on port %d\n", g_df_encap_port);
+    return sk;
+}
+
 static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
                            size_t foff, int use_helper, int sa,
                            struct Reporter *reporter) {
@@ -215,6 +252,9 @@ static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
     }
     int saved_sa = g_sa;
     g_sa = sa;
+
+    /* Prefer our own encap socket; fall back to the IpSecManager port. */
+    int use_port = df_encap_open() >= 0 ? g_df_encap_port : g_encap_port;
 
     int sk_send = socket(AF_INET, SOCK_DGRAM, 0);
     if (sk_send < 0) { REPORTLN("socket failed: %s", strerror(errno)); return -1; }
@@ -230,7 +270,7 @@ static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
             REPORTLN("bind port %d failed: %s", g_sender_port, strerror(errno));
         struct sockaddr_in dst = {
             .sin_family = AF_INET,
-            .sin_port   = htons((uint16_t)g_encap_port),
+            .sin_port   = htons((uint16_t)use_port),
             .sin_addr   = {.s_addr = htonl(INADDR_LOOPBACK)},
         };
         if (connect(sk_send, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
