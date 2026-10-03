@@ -1,3 +1,4 @@
+#include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/kmod.h>
@@ -5,6 +6,9 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/ptrace.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/tracepoint.h>
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DFRoot LKM");
@@ -28,6 +32,25 @@ static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
     regs->regs[0] = 0;         /* x0 = DEFEX_ALLOW */
     regs->pc = regs->regs[30]; /* skip body: return to caller */
     return 1;
+}
+
+/* vivo's vr.ko installs a sys_exit tracepoint probe that kills any euid-0
+ * process carrying its app-origin tag, which includes the ksud this module
+ * spawns. Zeroing the tracepoint head's funcs list stops the probe firing for
+ * every process; the iterator skips a NULL funcs and the commit_creds probe
+ * still runs. Resolved by symbol, so unlike ghostlock's per-KMI
+ * off_vr_sys_exit_tp this needs no hand-carried offset. A kernel with no vr.ko
+ * has nothing registered here, so the write is inert. */
+static void neutralize_vr(kallsyms_lookup_name_t get_addr)
+{
+    struct tracepoint *tp =
+        (struct tracepoint *)get_addr("__tracepoint_sys_exit");
+    if (!tp) {
+        pr_info("dfroot: __tracepoint_sys_exit not found; vr.ko untouched\n");
+        return;
+    }
+    WRITE_ONCE(tp->funcs, NULL);
+    pr_info("dfroot: vr.ko sys_exit probe neutralized (tp=%px)\n", tp);
 }
 
 static int __nocfi __init dirtyfrag_init(void)
@@ -77,6 +100,9 @@ static int __nocfi __init dirtyfrag_init(void)
     }
     get_addr = (kallsyms_lookup_name_t)kln_kp.addr;
     unregister_kprobe(&kln_kp);
+
+    /* before the usermodehelper below spawns ksud as uid 0 */
+    neutralize_vr(get_addr);
 
     selinux_state = (bool *)get_addr("selinux_state");
     if (!selinux_state) {
