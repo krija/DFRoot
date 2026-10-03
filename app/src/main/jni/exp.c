@@ -344,6 +344,63 @@ static void dump_xfrm_stat(struct Reporter *reporter) {
     fclose(f);
 }
 
+/* Send one plain UDP datagram to the encap socket and one to a plain UDP
+ * socket we hold, then check both. Flat xfrm counters plus a receive on the
+ * encap socket means the encap hook is dead: packets queue as ordinary UDP
+ * because UDP_ENCAP_ESPINUDP is not set (or not honored) on vivo. */
+static void encap_probe(struct Reporter *reporter) {
+    /* control socket: plain UDP must always deliver */
+    int ctl = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in ca = {.sin_family = AF_INET,
+                             .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    if (ctl < 0 || bind(ctl, (struct sockaddr *)&ca, sizeof(ca)) < 0) {
+        REPORTLN("encap probe: control socket failed");
+        if (ctl >= 0) close(ctl);
+        return;
+    }
+    socklen_t clen = sizeof(ca);
+    getsockname(ctl, (struct sockaddr *)&ca, &clen);
+
+    int sk = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in dst = {.sin_family = AF_INET,
+                              .sin_port = htons((uint16_t)g_encap_port),
+                              .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
+    if (sk < 0 || connect(sk, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+        REPORTLN("encap probe: send socket failed");
+        if (sk >= 0) close(sk);
+        close(ctl);
+        return;
+    }
+
+    /* 1) plain UDP to the encap socket */
+    const char *m1 = "PLAIN";
+    sendto(sk, m1, 5, 0, (struct sockaddr *)&dst, sizeof(dst));
+
+    /* 2) ESP-shaped garbage (0x00000000 first word = IKE per RFC3948) to
+     *    control: proves loopback delivery itself works */
+    const char *m2 = "CTRL!";
+    struct sockaddr_in cd = ca;
+    sendto(sk, m2, 5, 0, (struct sockaddr *)&cd, sizeof(cd));
+
+    struct timeval tv = {.tv_usec = 300000};
+    setsockopt(ctl, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[64];
+    struct sockaddr_in from;
+    socklen_t flen = sizeof(from);
+    ssize_t n = recvfrom(ctl, buf, sizeof(buf), 0, (struct sockaddr *)&from, &flen);
+    close(ctl);
+    close(sk);
+
+    if (n < 0) {
+        REPORTLN("encap probe: control datagram never arrived; loopback UDP "
+                 "delivery is blocked (per-UID firewall?)");
+    } else {
+        REPORTLN("encap probe: control loopback OK; check encap socket on "
+                 "vivo (was UDP_ENCAP set?)");
+    }
+}
+
 /* Probe each SA candidate and leave g_sa on the first one that decrypts into
  * the page cache. Returns the winning index, -1 if none worked. */
 static int xfrm_probe(struct Reporter *reporter) {
@@ -368,6 +425,7 @@ static int xfrm_probe(struct Reporter *reporter) {
             REPORTLN("* SA candidate %d verified", cand);
             return cand;
         }
+        encap_probe(reporter);
     }
     REPORTLN("* no SA candidate decrypted into the page cache");
     return g_sa = -1;
