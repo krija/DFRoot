@@ -40,15 +40,15 @@ static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
  * still runs. Resolved by symbol, so unlike ghostlock's per-KMI
  * off_vr_sys_exit_tp this needs no hand-carried offset.
  *
- * Only touch funcs when vr.ko actually owns it. On a kernel with no vr.ko the
- * tracepoint is either empty or a legitimate user's (perf, ftrace, BPF), and
- * clearing it would break them, so this checks the probe's module first. */
+ * Only touch funcs when vr.ko actually owns a probe in the list. On a kernel
+ * with no vr.ko the tracepoint is either empty or a legitimate user's (perf,
+ * ftrace, BPF), and clearing it would break them, so this walks the list and
+ * looks for the probe's module. */
 static void neutralize_vr(kallsyms_lookup_name_t get_addr)
 {
     struct tracepoint *tp =
         (struct tracepoint *)get_addr("__tracepoint_sys_exit");
-    struct tracepoint_func *funcs;
-    struct module *owner;
+    struct tracepoint_func *funcs, *f;
 
     if (!tp) {
         pr_info("dfroot: __tracepoint_sys_exit not found; vr.ko untouched\n");
@@ -59,16 +59,16 @@ static void neutralize_vr(kallsyms_lookup_name_t get_addr)
         pr_info("dfroot: sys_exit tracepoint empty; vr.ko not present\n");
         return;
     }
-    owner = funcs->mod;
-    /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
-    if (!owner || !owner->name || strncmp(owner->name, "vr", 2) != 0 ||
-        (owner->name[2] != '\0' && owner->name[2] != '_')) {
-        pr_info("dfroot: sys_exit tracepoint owned by %s, not vr; left alone\n",
-                owner && owner->name ? owner->name : "(builtin)");
+    for (f = funcs; f->func; f++) {
+        /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
+        if (!f->mod || !f->mod->name) continue;
+        if (strncmp(f->mod->name, "vr", 2) != 0) continue;
+        if (f->mod->name[2] != '\0' && f->mod->name[2] != '_') continue;
+        WRITE_ONCE(tp->funcs, NULL);
+        pr_info("dfroot: vr.ko sys_exit probe neutralized (tp=%px)\n", tp);
         return;
     }
-    WRITE_ONCE(tp->funcs, NULL);
-    pr_info("dfroot: vr.ko sys_exit probe neutralized (tp=%px)\n", tp);
+    pr_info("dfroot: sys_exit tracepoint has no vr.ko probe; left alone\n");
 }
 
 static int __nocfi __init dirtyfrag_init(void)
