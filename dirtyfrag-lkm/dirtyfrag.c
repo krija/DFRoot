@@ -117,7 +117,7 @@ static int __nocfi __init dirtyfrag_init(void)
     ((struct subprocess_info *)info)->path = sh;
 
     ret = umh_exec(info, UMH_WAIT_PROC);
-    pr_info("dfroot: usermodehelper_exec(%s) returned %d\n", ksud, ret);
+    pr_info("dfroot: usermodehelper_exec returned %d\n", ret);
 
     if (defex_kp.addr) unregister_kprobe(&defex_kp);
     if (umh_kp.addr)   unregister_kprobe(&umh_kp);
