@@ -42,12 +42,15 @@ static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
  *
  * Only touch funcs when vr.ko actually owns a probe in the list. On a kernel
  * with no vr.ko the tracepoint is either empty or a legitimate user's (perf,
- * ftrace, BPF), and clearing it would break them, so this walks the list and
- * looks for the probe's module. */
+ * ftrace, BPF), and clearing it would break them. The probe struct has no
+ * owning-module field on these KMIs (it only landed upstream in 6.10), so this
+ * maps each probe's function back to its module with __module_address(). */
 static void neutralize_vr(kallsyms_lookup_name_t get_addr)
 {
     struct tracepoint *tp =
         (struct tracepoint *)get_addr("__tracepoint_sys_exit");
+    struct module *(*module_at)(unsigned long) =
+        (struct module *(*)(unsigned long))get_addr("__module_address");
     struct tracepoint_func *funcs, *f;
 
     if (!tp) {
@@ -59,11 +62,16 @@ static void neutralize_vr(kallsyms_lookup_name_t get_addr)
         pr_info("dfroot: sys_exit tracepoint empty; vr.ko not present\n");
         return;
     }
+    if (!module_at) {
+        pr_info("dfroot: __module_address unavailable; sys_exit left alone\n");
+        return;
+    }
     for (f = funcs; f->func; f++) {
+        struct module *owner = module_at((unsigned long)f->func);
         /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
-        if (!f->mod || !f->mod->name) continue;
-        if (strncmp(f->mod->name, "vr", 2) != 0) continue;
-        if (f->mod->name[2] != '\0' && f->mod->name[2] != '_') continue;
+        if (!owner || !owner->name) continue;
+        if (strncmp(owner->name, "vr", 2) != 0) continue;
+        if (owner->name[2] != '\0' && owner->name[2] != '_') continue;
         WRITE_ONCE(tp->funcs, NULL);
         pr_info("dfroot: vr.ko sys_exit probe neutralized (tp=%px)\n", tp);
         return;
