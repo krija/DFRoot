@@ -315,10 +315,16 @@ static void xfrm_probe(struct Reporter *reporter) {
     if (n == 16 && memcmp(got, want, 16) == 0) {
         REPORTLN("xfrm probe: OK, XFRM wrote through to the page cache. "
                  "The APEX file or its filesystem is the problem");
-    } else {
-        REPORTLN("xfrm probe: unchanged, XFRM decrypted into a copy or the "
-                 "state never matched. This kernel is not vulnerable here");
+        return;
     }
+
+    /* Nothing landed even on f2fs. The kernel moves xfrm_stat counters once a
+     * packet reaches SA lookup, so a bump between runs means the decrypt path
+     * ran, a flat line means it never arrived as ESP. Apps cannot read
+     * /proc/net (blocked for targetSdk 28+), so this is an adb step. */
+    REPORTLN("xfrm probe: unchanged. From adb, diff /proc/net/xfrm_stat");
+    REPORTLN("around a run: bumps mean the ESP packet reached SA lookup and");
+    REPORTLN("was decrypted into a copy, flat means it never arrived as ESP");
 }
 
 extern char libcxx_start[];
