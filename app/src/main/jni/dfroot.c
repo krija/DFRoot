@@ -45,17 +45,29 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t len) {
     return 0;
 }
 
-static const char *detect_ko_target(void) {
+/* Picks the first existing candidate that can host ko_len bytes. Writing past
+ * a host file's EOF corrupts erofs tail pages and panics some kernels (seen on
+ * xiaomi 15, where libbinderdebug.so is tiny), so size gates the choice. */
+const char *df_select_ko_target(size_t ko_len) {
     static const char *const candidates[] = {
         "/vendor/lib64/libbinderdebug.so",
         "/vendor/lib64/libstagefrighthw.so",
         "/vendor/lib64/libstagefright_aidl_bufferpool2.so",
     };
+    const char *fallback = candidates[0];
     for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
-        if (access(candidates[i], F_OK) == 0)
+        struct stat st;
+        if (access(candidates[i], F_OK) != 0)
+            continue;
+        if (fallback == candidates[0])
+            fallback = candidates[i];
+        if (stat(candidates[i], &st) == 0 &&
+            (size_t)st.st_size >= ko_len + 4096)
             return candidates[i];
     }
-    return candidates[0];
+    REPORTLN("[!] no candidate has %zu bytes free; using %s anyway",
+             ko_len + 4096, fallback);
+    return fallback;
 }
 
 static void usage(const char *argv0) {
@@ -172,7 +184,7 @@ int main(int argc, char **argv) {
                      ? "/data/user_de/0/df.root"
                      : "/data/local/tmp";
 
-    const char *ko_target = detect_ko_target();
+    const char *ko_target = df_select_ko_target(0); /* size re-checked in dfroot_run */
     REPORTLN("found ko_target: %s", ko_target);
 
     REPORTLN("");
