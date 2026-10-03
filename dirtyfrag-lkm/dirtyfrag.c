@@ -69,7 +69,7 @@ static void neutralize_vr(kallsyms_lookup_name_t get_addr)
     for (f = funcs; f->func; f++) {
         struct module *owner = module_at((unsigned long)f->func);
         /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
-        if (!owner || !owner->name) continue;
+        if (!owner) continue;
         if (strncmp(owner->name, "vr", 2) != 0) continue;
         if (owner->name[2] != '\0' && owner->name[2] != '_') continue;
         WRITE_ONCE(tp->funcs, NULL);
