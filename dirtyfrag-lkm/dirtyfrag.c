@@ -5,6 +5,8 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/ptrace.h>
+#include <linux/rcupdate.h>
+#include <linux/string.h>
 #include <linux/tracepoint.h>
 
 MODULE_LICENSE("GPL");
@@ -36,14 +38,33 @@ static int defex_pre_handler(struct kprobe *p, struct pt_regs *regs)
  * spawns. Zeroing the tracepoint head's funcs list stops the probe firing for
  * every process; the iterator skips a NULL funcs and the commit_creds probe
  * still runs. Resolved by symbol, so unlike ghostlock's per-KMI
- * off_vr_sys_exit_tp this needs no hand-carried offset. A kernel with no vr.ko
- * has nothing registered here, so the write is inert. */
+ * off_vr_sys_exit_tp this needs no hand-carried offset.
+ *
+ * Only touch funcs when vr.ko actually owns it. On a kernel with no vr.ko the
+ * tracepoint is either empty or a legitimate user's (perf, ftrace, BPF), and
+ * clearing it would break them, so this checks the probe's module first. */
 static void neutralize_vr(kallsyms_lookup_name_t get_addr)
 {
     struct tracepoint *tp =
         (struct tracepoint *)get_addr("__tracepoint_sys_exit");
+    struct tracepoint_func *funcs;
+    struct module *owner;
+
     if (!tp) {
         pr_info("dfroot: __tracepoint_sys_exit not found; vr.ko untouched\n");
+        return;
+    }
+    funcs = rcu_dereference_protected(tp->funcs, 1);
+    if (!funcs) {
+        pr_info("dfroot: sys_exit tracepoint empty; vr.ko not present\n");
+        return;
+    }
+    owner = funcs->mod;
+    /* same match ghostlock uses: the "vr" module, or a "vr_*" sibling */
+    if (!owner || !owner->name || strncmp(owner->name, "vr", 2) != 0 ||
+        (owner->name[2] != '\0' && owner->name[2] != '_')) {
+        pr_info("dfroot: sys_exit tracepoint owned by %s, not vr; left alone\n",
+                owner && owner->name ? owner->name : "(builtin)");
         return;
     }
     WRITE_ONCE(tp->funcs, NULL);
