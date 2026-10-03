@@ -214,8 +214,13 @@ out_pipe:
  * issues the encap setsockopt (observed on vivo). */
 static int g_df_encap_sk = -1;
 static int g_df_encap_port;
+/* set by --no-own-encap: keep using the IpSecManager encapsulation port */
+static int g_no_own_encap;
+/* set by --no-probe: skip the SA verification probe entirely */
+static int g_no_probe;
 
 static int df_encap_open(void) {
+    if (g_no_own_encap) return -1;
     if (g_df_encap_sk >= 0) return g_df_encap_sk;
     int sk = socket(AF_INET, SOCK_DGRAM, 0);
     if (sk < 0) return -1;
@@ -723,9 +728,11 @@ int dfroot_run(int encap_port, int sender_port,
                const uint32_t spi[MAX_SAS], const int icv_len[MAX_SAS], int nsa,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
                const char *ko_target, const char *package_name, int soft_reboot,
-               int stage, int no_vr) {
+               int stage, int no_vr, int no_probe, int no_own_encap) {
     struct Reporter ro = {0}, *reporter = &ro;
 
+    g_no_probe    = no_probe;
+    g_no_own_encap = no_own_encap;
     g_encap_port  = encap_port;
     g_sender_port = sender_port;
     g_nsa = nsa < MAX_SAS ? nsa : MAX_SAS;
@@ -764,9 +771,9 @@ int dfroot_run(int encap_port, int sender_port,
 
     int rc = 3;
     /* Pick the SA candidate that actually decrypts on this device before
-     * touching any real target. Devices where the primary works pay only one
-     * probe write against a scratch file. */
-    if (xfrm_probe(reporter) < 0) goto done;
+     * touching any real target. --no-probe skips it (CI#12 behavior). */
+    if (!g_no_probe && xfrm_probe(reporter) < 0) goto done;
+    g_sa = 0;
     if (patch_ko(reporter)) goto done;
     if (patch_hook("/system/lib64/libc++.so",
                    "_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_",

