@@ -18,7 +18,7 @@ jobs:
 
       - name: Aplikuj odlahceny commit
         run: |
-          git remote add chisewaguri https://github.com
+          git remote add https://github.com/chisewaguri/DFRoot.git
           git fetch chisewaguri fe8fdddb472882b6165057cd323110a45b40d5e8
           git cherry-pick -X theirs fe8fdddb472882b6165057cd323110a45b40d5e8
 
