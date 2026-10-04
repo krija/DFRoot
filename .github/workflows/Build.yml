@@ -18,9 +18,12 @@ jobs:
 
       - name: Aplikuj odlahceny commit
         run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
           git remote add https://github.com/chisewaguri/DFRoot.git
-          git fetch chisewaguri fe8fdddb472882b6165057cd323110a45b40d5e8
+          git fetch remote-fork
           git cherry-pick -X theirs fe8fdddb472882b6165057cd323110a45b40d5e8
+
 
 
       - name: Setup Java
