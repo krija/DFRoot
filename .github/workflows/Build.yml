@@ -16,6 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Aplikuj odlahceny commit
+        run: |
+          git remote add diabl0w https://github.com
+          git fetch diabl0w fe8fdddb472882b6165057cd323110a45b40d5e8
+          git cherry-pick -X theirs fe8fdddb472882b6165057cd323110a45b40d5e8
+
+
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
