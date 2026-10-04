@@ -16,13 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Aplikuj odlahceny commit
+      - name: Add Shizuku commit from chisewaguri's repo
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
           git remote add remote-fork https://github.com/chisewaguri/DFRoot.git
-          git fetch --depth=2 remote-fork fe8fdddb472882b6165057cd323110a45b40d5e8
-          git cherry-pick -X theirs fe8fdddb472882b6165057cd323110a45b40d5e8
+          git fetch --depth=2 remote-fork 7aa5babce1f1ad130f3f4da144d9279f48a3cce5
+          git cherry-pick -X theirs 7aa5babce1f1ad130f3f4da144d9279f48a3cce5
 
 
 
