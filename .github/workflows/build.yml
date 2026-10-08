@@ -52,25 +52,33 @@ jobs:
   build-dfroot:
     needs: build-lkms
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
       - name: Validate signing config
-        if: github.event_name != 'pull_request'
         run: |
-          if [ "${{ secrets.KEYSTORE }}" = "" ]; then
-            echo "::error::Signing secrets not configured. KEYSTORE secret is required for release builds."
+          if [ "${{ secrets.SIGNING_KEY }}" = "" ]; then
+            echo "::error::Signing secrets not configured. SIGNING_KEY secret is required for release builds."
             exit 1
           fi
 
-      - name: Create signing.properties
-        if: github.event_name != 'pull_request'
+      - name: Create signing.properties and Keystore (Final Location)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SIGNING_KEY }}
+          KEYSTORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          echo KEYSTORE_FILE=../keystore.jks > signing.properties
-          echo KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} >> signing.properties
-          echo KEY_ALIAS=${{ secrets.KEY_ALIAS }} >> signing.properties
-          echo KEY_PASSWORD=${{ secrets.KEY_PASSWORD }} >> signing.properties
-          echo ${{ secrets.KEYSTORE }} | base64 --decode > keystore.jks
+          # 1. Dekódovanie kľúča priamo do zložky 'app'
+          echo "$KEYSTORE_BASE64" | base64 --decode > app/keystore.jks
+          
+          # 2. Vytvorenie signing.properties v roote, ale s relatívnou cestou pre sub-modul app
+          echo "KEYSTORE_FILE=keystore.jks" > signing.properties
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> signing.properties
+          echo "KEY_ALIAS=$KEY_ALIAS" >> signing.properties
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> signing.properties
 
       - name: Download DF LKMs
         uses: actions/download-artifact@v7
