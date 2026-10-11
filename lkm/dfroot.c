@@ -51,7 +51,8 @@ static int __nocfi __init dfroot_init(void)
         "touch /dev/dfm0;"
         " rmmod oplus_secure_harden 2>/dev/null;"         //
         " rmmod oplus_security_keventupload 2>/dev/null;" // Oppo/OnePlus
-        " rmmod oplus_security_guard 2>/dev/null",        //
+        " rmmod oplus_security_guard 2>/dev/null;"        //
+        " exit 0",
         NULL };
 
     // Symbol finder
