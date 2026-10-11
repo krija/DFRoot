@@ -1,8 +1,8 @@
 <resources>
     <style name="Theme.DirtyFrag" parent="android:Theme.Material.Light">
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:colorPrimary">#8FC79A</item>
-        <item name="android:colorAccent">#8FC79A</item>
+        <item name="android:colorPrimary">#343B4D</item>
+        <item name="android:colorAccent">#343B4D</item>
         <item name="android:colorControlNormal">@android:color/black</item>
         <item name="android:textColorPrimary">@android:color/black</item>
         <item name="android:colorButtonNormal">@color/btn_background_color</item>
