@@ -12,12 +12,16 @@ android {
     namespace = "df.root"
     compileSdk = 37
 
+    buildFeatures {        
+         buildConfig = true    
+         }
+
     defaultConfig {
         applicationId = "df.root"
         minSdk = 32
         targetSdk = 37
-        versionCode = 401
-        versionName = "4.1"
+        versionCode = 403
+        versionName = "4.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
