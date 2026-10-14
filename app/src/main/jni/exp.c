@@ -554,4 +554,4 @@ int main(int argc, char **argv) {
     cleanup();
     return rc;
 
-}.
+}
