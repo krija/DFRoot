@@ -4,6 +4,8 @@ obj-m += dfroot.o
 # so every byte counts. -Os shrinks code; dropping unwind tables kills
 # .eh_frame (unused for modules).
 CFLAGS_dfroot.o := -Os -fno-asynchronous-unwind-tables -fno-unwind-tables
+#build-id fixes mrdump crashes
+LDFLAGS_dfroot.o := --build-id
 
 all:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) \
