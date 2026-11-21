@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-       - name: Validate signing config
+      - name: Validate signing config
         run: |
           if [ "${{ secrets.SIGNING_KEY }}" = "" ]; then
             echo "::error::Signing secrets not configured. SIGNING_KEY secret is required for release builds."
